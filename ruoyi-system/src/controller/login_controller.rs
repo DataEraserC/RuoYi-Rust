@@ -46,6 +46,22 @@ pub struct LoginRequest {
     pub remember_me: bool,
 }
 
+/// 注册请求参数
+#[derive(Debug, Deserialize)]
+pub struct RegisterRequest {
+    /// 用户名
+    pub username: String,
+    /// 密码
+    pub password: String,
+    /// 确认密码
+    #[serde(rename = "confirmPassword")]
+    pub confirm_password: String,
+    /// 验证码
+    pub code: String,
+    /// 验证码唯一标识
+    pub uuid: String,
+}
+
 /// 用户登录
 #[post("/login")]
 pub async fn login(
@@ -153,6 +169,90 @@ pub async fn login(
     }
 }
 
+/// 用户注册
+#[post("/register")]
+pub async fn register(
+    req: web::Json<RegisterRequest>,
+    request: HttpRequest,
+    user_service: web::Data<UserServiceImpl>,
+    captcha_service: web::Data<InMemoryCaptchaService>,
+) -> impl Responder {
+    info!("用户注册请求: username={}", req.username);
+    // 构建出登录日志结构体
+    let ipaddr = ip::get_real_ip_by_request(&request);
+    let login_location = ip::get_ip_location(&ipaddr);
+    let mut login_info = LoginInfoModel {
+        info_id: 0,
+        user_name: Some(req.username.clone()),
+        ipaddr: Some(ipaddr.clone()),
+        login_location: Some(login_location.clone()),
+        browser: Some(http::get_browser_info(&request)),
+        os: Some(http::get_os_info(&request)),
+        status: Some("".to_string()),
+        msg: Some("".to_string()),
+        login_time: Some(Utc::now()),
+    };
+    
+    // 1. 验证验证码
+    if !captcha_service.verify_captcha(&req.uuid, &req.code) {
+        login_info.msg = Some("验证码错误".to_string());
+        error!(target: "system::login_info", "{}", serde_json::to_string(&login_info).unwrap());
+        return HttpResponse::Ok().json(R::<String>::fail("验证码错误"));
+    }
+    
+    // 2. 验证密码和确认密码是否一致
+    if req.password != req.confirm_password {
+        login_info.msg = Some("两次输入的密码不一致".to_string());
+        error!(target: "system::login_info", "{}", serde_json::to_string(&login_info).unwrap());
+        return HttpResponse::Ok().json(R::<String>::fail("两次输入的密码不一致"));
+    }
+    
+    // 3. 检查用户名是否已存在
+    match user_service.check_user_name_unique(&req.username, None).await {
+        Ok(is_unique) => {
+            if !is_unique {
+                login_info.msg = Some("用户名已存在".to_string());
+                error!(target: "system::login_info", "{}", serde_json::to_string(&login_info).unwrap());
+                return HttpResponse::Ok().json(R::<String>::fail("用户名已存在"));
+            }
+        }
+        Err(e) => {
+            login_info.msg = Some(format!("检查用户名失败: {}", e));
+            error!(target: "system::login_info", "{}", serde_json::to_string(&login_info).unwrap());
+            return HttpResponse::Ok().json(R::<String>::fail(&format!("检查用户名失败: {}", e)));
+        }
+    }
+    
+    // 4. 创建用户
+    let create_req = crate::controller::user_controller::CreateOrUpdateUserRequest {
+        user_id: None,
+        user_name: Some(req.username.clone()),
+        nick_name: Some(req.username.clone()), // 使用用户名作为昵称
+        password: Some(req.password.clone()),
+        email: None,
+        phonenumber: None,
+        sex: Some("0".to_string()), // 默认性别为男
+        status: Some("0".to_string()), // 默认状态为正常
+        dept_id: None,
+        post_ids: None,
+        role_ids: None,
+        remark: None,
+    };
+    
+    match user_service.create_user(create_req).await {
+        Ok(_) => {
+            login_info.msg = Some("注册成功".to_string());
+            info!(target: "system::login_info", "{}", serde_json::to_string(&login_info).unwrap());
+            HttpResponse::Ok().json(R::<String>::ok_with_msg("注册成功"))
+        }
+        Err(e) => {
+            login_info.msg = Some(format!("注册失败: {}", e));
+            error!(target: "system::login_info", "{}", serde_json::to_string(&login_info).unwrap());
+            HttpResponse::Ok().json(R::<String>::fail(&format!("注册失败: {}", e)))
+        }
+    }
+}
+
 /// 退出登录
 #[post("/logout")]
 pub async fn logout() -> impl Responder {
@@ -245,6 +345,7 @@ pub async fn get_routers(
 /// 注册登录路由
 pub fn load_login_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(login)
+        .service(register)
         .service(logout)
         .service(get_info)
         .service(get_routers);

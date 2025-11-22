@@ -147,6 +147,7 @@ pub fn register_routes(cfg: &mut web::ServiceConfig) {
 pub fn get_exclude_paths() -> Vec<String> {
     vec![
         "/login".to_string(),              // 登录接口
+        "/register".to_string(),              // 登录接口
         "/logout".to_string(), // 登出接口（实际上登出需要认证，但若依的前端可能依赖这个行为）
         "/captchaImage".to_string(), // 验证码接口
         "/health".to_string(), // 健康检查接口
